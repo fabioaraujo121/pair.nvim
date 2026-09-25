@@ -19,6 +19,10 @@ M.opts = {
   ttl = tonumber(vim.env.PAIR_HIGHLIGHT_TTL) or 20,
   -- highlight group used for "Claude is pointing here"
   hl = 'PairPointer',
+  -- set to false to define no keymaps
+  keymaps = true,
+  -- the pair binary; `pair start` sets vim.g.pair_bin to its own path
+  bin = vim.g.pair_bin or 'pair',
 }
 
 local state = { buf = nil, timer = nil }
@@ -108,8 +112,34 @@ function M.reload()
   return true
 end
 
+-- Run a pair voice command asynchronously and show its result.
+local function run_pair(args, label)
+  vim.notify('pair: ' .. label, vim.log.levels.INFO)
+  local cmd = { M.opts.bin }
+  vim.list_extend(cmd, args)
+  vim.system(cmd, { text = true }, vim.schedule_wrap(function(res)
+    local out = vim.trim(res.stdout or '')
+    if res.code ~= 0 then
+      vim.notify('pair: ' .. label .. ' failed: ' .. vim.trim(res.stderr or ''), vim.log.levels.WARN)
+    elseif out ~= '' then
+      vim.notify('pair: ' .. out, vim.log.levels.INFO)
+    end
+  end))
+end
+
+-- Push-to-talk: record until you pause, transcribe, send to Claude.
+function M.listen()
+  run_pair({ 'hook', 'listen' }, 'listening… (speak, then pause)')
+end
+
+-- Interrupt Claude (Escape), then listen.
+function M.interrupt()
+  run_pair({ 'hook', 'interrupt' }, 'interrupting… (speak, then pause)')
+end
+
 function M.setup(opts)
   M.opts = vim.tbl_extend('force', M.opts, opts or {})
+  M.opts.bin = (opts and opts.bin) or vim.g.pair_bin or M.opts.bin
   vim.o.autoread = true
   -- A: no ATTENTION prompt on existing swapfiles (it would block the RPC).
   vim.opt.shortmess:append('A')
@@ -153,6 +183,13 @@ function M.setup(opts)
   })
 
   api.nvim_create_user_command('PairClear', M.clear, { desc = 'pair: clear the pointer highlight' })
+  api.nvim_create_user_command('PairListen', M.listen, { desc = 'pair: push-to-talk' })
+  api.nvim_create_user_command('PairInterrupt', M.interrupt, { desc = 'pair: interrupt Claude, then listen' })
+
+  if M.opts.keymaps then
+    vim.keymap.set('n', '<leader>pt', M.listen, { desc = 'pair: push-to-talk' })
+    vim.keymap.set('n', '<leader>pi', M.interrupt, { desc = 'pair: interrupt Claude, then listen' })
+  end
 end
 
 return M
