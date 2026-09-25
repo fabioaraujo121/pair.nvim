@@ -137,6 +137,62 @@ function M.interrupt()
   run_pair({ 'hook', 'interrupt' }, 'interrupting… (speak, then pause)')
 end
 
+-- Repository root: set by `pair start`, else found from the scratchpad.
+local function repo_root()
+  if vim.g.pair_root and vim.g.pair_root ~= '' then return vim.g.pair_root end
+  local found = vim.fs.find({ 'PAIRING.md', '.git' }, { upward = true, path = vim.fn.getcwd() })[1]
+  if found then return vim.fs.dirname(found) end
+  return vim.fn.getcwd()
+end
+
+-- Point Claude at the visual selection (or the current line): asks for an
+-- optional note, then types "Look at file:start-end: note" into the Claude
+-- pane. With a note the message is submitted; without one it is left in
+-- the input so you can keep typing.
+function M.point()
+  local mode = vim.fn.mode()
+  local s, e
+  if mode == 'v' or mode == 'V' or mode == '\22' then
+    s, e = vim.fn.line('v'), vim.fn.line('.')
+    api.nvim_feedkeys(api.nvim_replace_termcodes('<Esc>', true, false, true), 'n', false)
+  else
+    s, e = vim.fn.line("'<"), vim.fn.line("'>")
+    if s == 0 or e == 0 then s, e = vim.fn.line('.'), vim.fn.line('.') end
+  end
+  if s > e then s, e = e, s end
+  local file = api.nvim_buf_get_name(0)
+  if file == '' then
+    vim.notify('pair: buffer has no file', vim.log.levels.WARN)
+    return
+  end
+  vim.ui.input({ prompt = 'Note for Claude (empty = just point): ' }, function(note)
+    if note == nil then return end
+    local args = { 'hook', 'point', '--file', file, '--start', tostring(s), '--end', tostring(e), '--root', repo_root() }
+    if note ~= '' then
+      vim.list_extend(args, { '--note', note })
+    end
+    run_pair(args, 'pointing at ' .. vim.fn.fnamemodify(file, ':.') .. ':' .. s .. '-' .. e)
+  end)
+end
+
+-- Toggle the PAIRING.md split.
+function M.scratch()
+  local path = repo_root() .. '/PAIRING.md'
+  for _, win in ipairs(api.nvim_tabpage_list_wins(0)) do
+    local name = api.nvim_buf_get_name(api.nvim_win_get_buf(win))
+    if name == path or name:match('PAIRING%.md$') then
+      if #api.nvim_tabpage_list_wins(0) > 1 then
+        api.nvim_win_close(win, false)
+      else
+        vim.notify('pair: PAIRING.md is the only window', vim.log.levels.INFO)
+      end
+      return
+    end
+  end
+  vim.cmd('botright vsplit ' .. vim.fn.fnameescape(path))
+  vim.cmd('vertical resize ' .. math.floor(vim.o.columns * 0.4))
+end
+
 function M.setup(opts)
   M.opts = vim.tbl_extend('force', M.opts, opts or {})
   M.opts.bin = (opts and opts.bin) or vim.g.pair_bin or M.opts.bin
@@ -185,10 +241,14 @@ function M.setup(opts)
   api.nvim_create_user_command('PairClear', M.clear, { desc = 'pair: clear the pointer highlight' })
   api.nvim_create_user_command('PairListen', M.listen, { desc = 'pair: push-to-talk' })
   api.nvim_create_user_command('PairInterrupt', M.interrupt, { desc = 'pair: interrupt Claude, then listen' })
+  api.nvim_create_user_command('PairPoint', M.point, { desc = 'pair: point Claude at the selection', range = true })
+  api.nvim_create_user_command('PairScratch', M.scratch, { desc = 'pair: toggle PAIRING.md' })
 
   if M.opts.keymaps then
     vim.keymap.set('n', '<leader>pt', M.listen, { desc = 'pair: push-to-talk' })
     vim.keymap.set('n', '<leader>pi', M.interrupt, { desc = 'pair: interrupt Claude, then listen' })
+    vim.keymap.set({ 'n', 'x' }, '<leader>pp', M.point, { desc = 'pair: point Claude at this code' })
+    vim.keymap.set('n', '<leader>ps', M.scratch, { desc = 'pair: toggle PAIRING.md' })
   end
 end
 
