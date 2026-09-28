@@ -17,6 +17,8 @@ local augroup = api.nvim_create_augroup('pair', { clear = true })
 M.opts = {
   -- seconds before a `show` highlight clears on its own (0 = never)
   ttl = tonumber(vim.env.PAIR_HIGHLIGHT_TTL) or 20,
+  -- seconds a drawn change stays visible (0 = until the next one)
+  diff_ttl = tonumber(vim.env.PAIR_DIFF_TTL) or 120,
   -- highlight group used for "Claude is pointing here"
   hl = 'PairPointer',
   -- set to false to define no keymaps
@@ -33,6 +35,31 @@ M.tree_filetypes = { netrw = true, NvimTree = true, ['neo-tree'] = true, oil = t
 local function ensure_hl()
   -- `default = true` lets a colorscheme or the user override it.
   api.nvim_set_hl(0, M.opts.hl, { link = 'Visual', default = true })
+  api.nvim_set_hl(0, 'PairAdd', { link = 'DiffAdd', default = true })
+  api.nvim_set_hl(0, 'PairAddSign', { link = 'Added', default = true })
+  api.nvim_set_hl(0, 'PairDelete', { link = 'DiffDelete', default = true })
+end
+
+-- Arm the timer that clears the current highlight after `seconds`.
+local function expire_after(seconds)
+  if seconds and seconds > 0 then
+    state.timer = uv.new_timer()
+    state.timer:start(seconds * 1000, 0, vim.schedule_wrap(function() M.clear() end))
+  end
+end
+
+-- Put `file` in the editor window and return the window and buffer.
+local function open_in_editor(file)
+  local win = M.editor_win()
+  -- A name relative to the working directory keeps the status line short.
+  local buf = vim.fn.bufadd(vim.fn.fnamemodify(file, ':.'))
+  vim.fn.bufload(buf)
+  vim.bo[buf].buflisted = true
+  if api.nvim_win_get_buf(win) ~= buf then
+    api.nvim_win_set_buf(win, buf)
+  end
+  api.nvim_set_current_win(win)
+  return win, buf
 end
 
 -- Clear the pointer highlight and its TTL timer.
@@ -50,7 +77,7 @@ end
 
 -- Pick the window that shows regular files: not the scratchpad, not a tree
 -- or terminal. Falls back to the current window.
-local function editor_win()
+function M.editor_win()
   local function usable(win)
     if not api.nvim_win_is_valid(win) then return false end
     local buf = api.nvim_win_get_buf(win)
@@ -75,15 +102,7 @@ function M.show(file, s, e)
   e = tonumber(e) or s
   if e < s then e = s end
 
-  local win = editor_win()
-  -- A name relative to the working directory keeps the status line short.
-  local buf = vim.fn.bufadd(vim.fn.fnamemodify(file, ':.'))
-  vim.fn.bufload(buf)
-  vim.bo[buf].buflisted = true
-  if api.nvim_win_get_buf(win) ~= buf then
-    api.nvim_win_set_buf(win, buf)
-  end
-  api.nvim_set_current_win(win)
+  local win, buf = open_in_editor(file)
 
   local last = api.nvim_buf_line_count(buf)
   if s > last then s = last end
@@ -102,12 +121,72 @@ function M.show(file, s, e)
   end
   state.buf = buf
 
-  if M.opts.ttl and M.opts.ttl > 0 then
-    state.timer = uv.new_timer()
-    state.timer:start(M.opts.ttl * 1000, 0, vim.schedule_wrap(M.clear))
-  end
+  expire_after(M.opts.ttl)
   vim.cmd('redraw')
   return { file = api.nvim_buf_get_name(buf), start = s, ['end'] = e }
+end
+
+-- Draw a change inside the file, the way a diff would but in place: added
+-- lines are highlighted and get a "+" in the sign column, removed lines are
+-- shown as virtual lines where they used to be. `payload` is a JSON string
+-- (or a table) { added = { line, ... }, removed = { { at = line, lines = {} } } }
+-- with 1-based line numbers of the new file. The cursor goes to the first
+-- change.
+function M.diff(file, payload)
+  local marks = payload
+  if type(payload) == 'string' then
+    local ok, decoded = pcall(vim.json.decode, payload)
+    if not ok then return { error = 'invalid marks' } end
+    marks = decoded
+  end
+  marks = marks or {}
+  local win, buf = open_in_editor(file)
+  vim.cmd('silent! checktime')
+
+  M.clear()
+  ensure_hl()
+  local last = api.nvim_buf_line_count(buf)
+  local first, added, removed = nil, 0, 0
+
+  for _, l in ipairs(marks.added or {}) do
+    if l >= 1 and l <= last then
+      api.nvim_buf_set_extmark(buf, ns, l - 1, 0, {
+        line_hl_group = 'PairAdd',
+        sign_text = '+',
+        sign_hl_group = 'PairAddSign',
+        priority = 200,
+      })
+      added = added + 1
+      if not first or l < first then first = l end
+    end
+  end
+
+  for _, block in ipairs(marks.removed or {}) do
+    local virt = {}
+    for _, text in ipairs(block.lines or {}) do
+      virt[#virt + 1] = { { '- ' .. text, 'PairDelete' } }
+    end
+    if #virt > 0 then
+      local at = math.max(1, tonumber(block.at) or 1)
+      if at <= last then
+        api.nvim_buf_set_extmark(buf, ns, at - 1, 0, { virt_lines = virt, virt_lines_above = true, priority = 200 })
+      else -- removed at the end of the file
+        at = last
+        api.nvim_buf_set_extmark(buf, ns, last - 1, 0, { virt_lines = virt, priority = 200 })
+      end
+      removed = removed + #virt
+      if not first or at < first then first = at end
+    end
+  end
+
+  if first then
+    api.nvim_win_set_cursor(win, { first, 0 })
+    api.nvim_win_call(win, function() vim.cmd('normal! zz') end)
+  end
+  state.buf = buf
+  expire_after(M.opts.diff_ttl)
+  vim.cmd('redraw')
+  return { file = api.nvim_buf_get_name(buf), added = added, removed = removed, first = first }
 end
 
 -- Reload buffers whose file changed on disk. Safe against the modal
