@@ -27,6 +27,9 @@ M.opts = {
 
 local state = { buf = nil, timer = nil }
 
+-- Buffers of these filetypes are file trees, never edit targets.
+M.tree_filetypes = { netrw = true, NvimTree = true, ['neo-tree'] = true, oil = true }
+
 local function ensure_hl()
   -- `default = true` lets a colorscheme or the user override it.
   api.nvim_set_hl(0, M.opts.hl, { link = 'Visual', default = true })
@@ -52,6 +55,7 @@ local function editor_win()
     if not api.nvim_win_is_valid(win) then return false end
     local buf = api.nvim_win_get_buf(win)
     if vim.bo[buf].buftype ~= '' then return false end
+    if M.tree_filetypes[vim.bo[buf].filetype] then return false end
     if api.nvim_buf_get_name(buf):match('PAIRING%.md$') then return false end
     return true
   end
@@ -72,7 +76,8 @@ function M.show(file, s, e)
   if e < s then e = s end
 
   local win = editor_win()
-  local buf = vim.fn.bufadd(file)
+  -- A name relative to the working directory keeps the status line short.
+  local buf = vim.fn.bufadd(vim.fn.fnamemodify(file, ':.'))
   vim.fn.bufload(buf)
   vim.bo[buf].buflisted = true
   if api.nvim_win_get_buf(win) ~= buf then
@@ -189,8 +194,84 @@ function M.scratch()
       return
     end
   end
-  vim.cmd('botright vsplit ' .. vim.fn.fnameescape(path))
-  vim.cmd('vertical resize ' .. math.floor(vim.o.columns * 0.4))
+  local from = api.nvim_get_current_win()
+  if M.tree_filetypes[vim.bo[api.nvim_win_get_buf(from)].filetype] then
+    vim.cmd('wincmd l')
+  end
+  vim.cmd('belowright split ' .. vim.fn.fnameescape(path))
+  vim.cmd('resize ' .. math.max(6, math.floor(vim.o.lines * 0.28)))
+  vim.wo.winfixheight = true
+end
+
+-- True when the user has their own Neovim configuration.
+local function has_user_config()
+  local dir = vim.fn.stdpath('config')
+  return vim.fn.filereadable(dir .. '/init.lua') == 1 or vim.fn.filereadable(dir .. '/init.vim') == 1
+end
+
+-- Reasonable editor defaults for someone who never configured Neovim.
+local function apply_defaults()
+  vim.o.number = true
+  vim.o.mouse = 'a'
+  vim.o.termguicolors = true
+  vim.o.cursorline = true
+  vim.o.signcolumn = 'yes'
+  vim.o.splitright = true
+  vim.o.splitbelow = true
+  vim.o.swapfile = false
+  vim.o.wrap = false
+  vim.o.scrolloff = 5
+  vim.o.ignorecase = true
+  vim.o.smartcase = true
+  vim.o.clipboard = 'unnamedplus'
+  vim.o.laststatus = 2
+end
+
+-- Open a project tree on the left: the user's tree plugin when there is
+-- one, the built-in netrw otherwise.
+local function open_tree(root)
+  if vim.fn.exists(':NvimTreeOpen') == 2 then
+    vim.cmd('NvimTreeOpen')
+    return true
+  end
+  if vim.fn.exists(':Neotree') == 2 then
+    vim.cmd('Neotree show left')
+    return true
+  end
+  vim.g.netrw_banner = 0
+  vim.g.netrw_liststyle = 3 -- tree
+  vim.g.netrw_browse_split = 4 -- Enter opens the file in the editor window
+  vim.g.netrw_altv = 1
+  vim.g.netrw_winsize = -30 -- columns
+  vim.g.netrw_list_hide = [[^\.\./$,^\./$,^\.git/$,^\.pair/$,^node_modules/$,^tmp/$,^log/$,^\.DS_Store$]]
+  vim.g.netrw_hide = 1
+  local ok = pcall(vim.cmd, 'Lexplore ' .. vim.fn.fnameescape(root))
+  return ok
+end
+
+-- The pairing layout: project tree | editor, with PAIRING.md below the
+-- editor. `pair start` calls this once Neovim is up.
+function M.layout()
+  local root = repo_root()
+  vim.cmd('cd ' .. vim.fn.fnameescape(root))
+  if not has_user_config() then apply_defaults() end
+
+  -- The editor window starts on the README when there is one.
+  local readme = vim.fn.glob(root .. '/README*', false, true)[1]
+  if readme and vim.fn.filereadable(readme) == 1 then
+    vim.cmd('edit ' .. vim.fn.fnameescape(readme))
+  end
+  local editor = api.nvim_get_current_win()
+
+  open_tree(root)
+  if api.nvim_win_is_valid(editor) then api.nvim_set_current_win(editor) end
+
+  if vim.fn.filereadable(root .. '/PAIRING.md') == 1 then
+    vim.cmd('belowright split ' .. vim.fn.fnameescape(root .. '/PAIRING.md'))
+    vim.cmd('resize ' .. math.max(6, math.floor(vim.o.lines * 0.28)))
+    vim.wo.winfixheight = true
+  end
+  if api.nvim_win_is_valid(editor) then api.nvim_set_current_win(editor) end
 end
 
 function M.setup(opts)
