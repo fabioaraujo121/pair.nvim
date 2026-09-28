@@ -48,9 +48,20 @@ local function expire_after(seconds)
   end
 end
 
--- Put `file` in the editor window and return the window and buffer.
+-- The window that already shows `file`, if any.
+local function window_showing(file)
+  local want = vim.fn.fnamemodify(file, ':p')
+  for _, win in ipairs(api.nvim_tabpage_list_wins(0)) do
+    local name = api.nvim_buf_get_name(api.nvim_win_get_buf(win))
+    if name ~= '' and vim.fn.fnamemodify(name, ':p') == want then return win end
+  end
+end
+
+-- Put `file` in the editor window and return the window and buffer. A file
+-- that is already on screen (the scratchpad, typically) is shown where it
+-- is instead of being opened a second time.
 local function open_in_editor(file)
-  local win = M.editor_win()
+  local win = window_showing(file) or M.editor_win()
   -- A name relative to the working directory keeps the status line short.
   local buf = vim.fn.bufadd(vim.fn.fnamemodify(file, ':.'))
   vim.fn.bufload(buf)
@@ -288,6 +299,24 @@ local function has_user_config()
   return vim.fn.filereadable(dir .. '/init.lua') == 1 or vim.fn.filereadable(dir .. '/init.vim') == 1
 end
 
+-- Colours for someone who never configured Neovim. The default theme is
+-- nearly monochrome on a light terminal; retrobox is built in, colourful,
+-- and follows the terminal's light or dark background.
+local function apply_colors()
+  vim.o.termguicolors = true
+  vim.cmd('syntax enable')
+  for _, scheme in ipairs({ vim.env.PAIR_COLORSCHEME or 'retrobox', 'habamax', 'default' }) do
+    if pcall(vim.cmd.colorscheme, scheme) then break end
+  end
+  -- Tree-sitter highlighting for the languages Neovim ships parsers for.
+  api.nvim_create_autocmd('FileType', {
+    group = augroup,
+    pattern = { 'markdown', 'lua', 'vim', 'c', 'query', 'help' },
+    callback = function(ev) pcall(vim.treesitter.start, ev.buf) end,
+  })
+  ensure_hl()
+end
+
 -- Reasonable editor defaults for someone who never configured Neovim.
 local function apply_defaults()
   vim.o.number = true
@@ -333,7 +362,10 @@ end
 function M.layout()
   local root = repo_root()
   vim.cmd('cd ' .. vim.fn.fnameescape(root))
-  if not has_user_config() then apply_defaults() end
+  if not has_user_config() then
+    apply_defaults()
+    apply_colors()
+  end
 
   -- The editor window starts on the README when there is one.
   local readme = vim.fn.glob(root .. '/README*', false, true)[1]
