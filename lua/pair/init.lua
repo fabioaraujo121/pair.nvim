@@ -49,7 +49,7 @@ local function expire_after(seconds)
 end
 
 -- The window that already shows `file`, if any.
-local function window_showing(file)
+function M.editor_showing(file)
   local want = vim.fn.fnamemodify(file, ':p')
   for _, win in ipairs(api.nvim_tabpage_list_wins(0)) do
     local name = api.nvim_buf_get_name(api.nvim_win_get_buf(win))
@@ -61,7 +61,7 @@ end
 -- that is already on screen (the scratchpad, typically) is shown where it
 -- is instead of being opened a second time.
 local function open_in_editor(file)
-  local win = window_showing(file) or M.editor_win()
+  local win = M.editor_showing(file) or M.editor_win()
   -- A name relative to the working directory keeps the status line short.
   local buf = vim.fn.bufadd(vim.fn.fnamemodify(file, ':.'))
   vim.fn.bufload(buf)
@@ -86,15 +86,14 @@ function M.clear()
   state.buf = nil
 end
 
--- Pick the window that shows regular files: not the scratchpad, not a tree
--- or terminal. Falls back to the current window.
+-- Pick the window that shows regular files: not a tree or terminal. Falls
+-- back to the current window.
 function M.editor_win()
   local function usable(win)
     if not api.nvim_win_is_valid(win) then return false end
     local buf = api.nvim_win_get_buf(win)
     if vim.bo[buf].buftype ~= '' then return false end
     if M.tree_filetypes[vim.bo[buf].filetype] then return false end
-    if api.nvim_buf_get_name(buf):match('PAIRING%.md$') then return false end
     return true
   end
   local cur = api.nvim_get_current_win()
@@ -270,27 +269,24 @@ function M.point()
   end)
 end
 
--- Toggle the PAIRING.md split.
+-- Show PAIRING.md in the editor window, or go back to the file that was
+-- there. One file is on screen at a time: no split.
 function M.scratch()
   local path = repo_root() .. '/PAIRING.md'
-  for _, win in ipairs(api.nvim_tabpage_list_wins(0)) do
-    local name = api.nvim_buf_get_name(api.nvim_win_get_buf(win))
-    if name == path or name:match('PAIRING%.md$') then
-      if #api.nvim_tabpage_list_wins(0) > 1 then
-        api.nvim_win_close(win, false)
-      else
-        vim.notify('pair: PAIRING.md is the only window', vim.log.levels.INFO)
-      end
-      return
+  local win = M.editor_showing(path) or M.editor_win()
+  api.nvim_set_current_win(win)
+  local shown = api.nvim_buf_get_name(api.nvim_win_get_buf(win))
+  if vim.fn.fnamemodify(shown, ':p') == vim.fn.fnamemodify(path, ':p') then
+    local back = state.before_scratch
+    if back and api.nvim_buf_is_valid(back) then
+      api.nvim_win_set_buf(win, back)
+    elseif vim.fn.bufnr('#') > 0 then
+      vim.cmd('silent! buffer #')
     end
+    return
   end
-  local from = api.nvim_get_current_win()
-  if M.tree_filetypes[vim.bo[api.nvim_win_get_buf(from)].filetype] then
-    vim.cmd('wincmd l')
-  end
-  vim.cmd('belowright split ' .. vim.fn.fnameescape(path))
-  vim.cmd('resize ' .. math.max(6, math.floor(vim.o.lines * 0.28)))
-  vim.wo.winfixheight = true
+  state.before_scratch = api.nvim_win_get_buf(win)
+  vim.cmd('edit ' .. vim.fn.fnameescape(path))
 end
 
 -- True when the user has their own Neovim configuration.
@@ -332,7 +328,8 @@ local function apply_defaults()
   vim.o.ignorecase = true
   vim.o.smartcase = true
   vim.o.clipboard = 'unnamedplus'
-  vim.o.laststatus = 2
+  vim.o.laststatus = 3 -- one status line for the whole editor, not one per window
+  vim.o.showtabline = 0
 end
 
 -- Open a project tree on the left: the user's tree plugin when there is
@@ -357,8 +354,8 @@ local function open_tree(root)
   return ok
 end
 
--- The pairing layout: project tree | editor, with PAIRING.md below the
--- editor. `pair start` calls this once Neovim is up.
+-- The pairing layout: the project tree and one file. `pair start` calls
+-- this once Neovim is up.
 function M.layout()
   local root = repo_root()
   vim.cmd('cd ' .. vim.fn.fnameescape(root))
@@ -375,13 +372,6 @@ function M.layout()
   local editor = api.nvim_get_current_win()
 
   open_tree(root)
-  if api.nvim_win_is_valid(editor) then api.nvim_set_current_win(editor) end
-
-  if vim.fn.filereadable(root .. '/PAIRING.md') == 1 then
-    vim.cmd('belowright split ' .. vim.fn.fnameescape(root .. '/PAIRING.md'))
-    vim.cmd('resize ' .. math.max(6, math.floor(vim.o.lines * 0.28)))
-    vim.wo.winfixheight = true
-  end
   if api.nvim_win_is_valid(editor) then api.nvim_set_current_win(editor) end
 end
 
@@ -434,13 +424,13 @@ function M.setup(opts)
   api.nvim_create_user_command('PairListen', M.listen, { desc = 'pair: push-to-talk' })
   api.nvim_create_user_command('PairInterrupt', M.interrupt, { desc = 'pair: interrupt Claude, then listen' })
   api.nvim_create_user_command('PairPoint', M.point, { desc = 'pair: point Claude at the selection', range = true })
-  api.nvim_create_user_command('PairScratch', M.scratch, { desc = 'pair: toggle PAIRING.md' })
+  api.nvim_create_user_command('PairScratch', M.scratch, { desc = 'pair: show PAIRING.md, or go back' })
 
   if M.opts.keymaps then
     vim.keymap.set('n', '<leader>pt', M.listen, { desc = 'pair: push-to-talk' })
     vim.keymap.set('n', '<leader>pi', M.interrupt, { desc = 'pair: interrupt Claude, then listen' })
     vim.keymap.set({ 'n', 'x' }, '<leader>pp', M.point, { desc = 'pair: point Claude at this code' })
-    vim.keymap.set('n', '<leader>ps', M.scratch, { desc = 'pair: toggle PAIRING.md' })
+    vim.keymap.set('n', '<leader>ps', M.scratch, { desc = 'pair: show PAIRING.md, or go back' })
   end
 end
 
