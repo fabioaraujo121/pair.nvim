@@ -48,6 +48,26 @@ local function expire_after(seconds)
   end
 end
 
+-- Show a message without ever raising "Press ENTER": that prompt blocks
+-- Neovim, and with it every jump and reload pair asks for. The message is
+-- cut to one line that fits, and shown once Neovim is free to show it.
+local function tell(msg, level)
+  msg = tostring(msg):gsub('%s+', ' ')
+  local room = math.max(20, vim.o.columns - 14)
+  if vim.fn.strdisplaywidth(msg) > room then
+    msg = vim.fn.strcharpart(msg, 0, room - 1) .. '…'
+  end
+  vim.schedule(function() vim.notify(msg, level or vim.log.levels.INFO) end)
+end
+
+-- True while the engineer is in the middle of something: inserting,
+-- selecting, answering a prompt. Changing the buffer or moving the cursor
+-- then would send their next keys somewhere they did not mean.
+local function engineer_busy()
+  local mode = api.nvim_get_mode()
+  return mode.blocking or mode.mode:sub(1, 1) ~= 'n'
+end
+
 -- The window that already shows `file`, if any.
 function M.editor_showing(file)
   local want = vim.fn.fnamemodify(file, ':p')
@@ -60,17 +80,25 @@ end
 -- Put `file` in the editor window and return the window and buffer. A file
 -- that is already on screen (the scratchpad, typically) is shown where it
 -- is instead of being opened a second time.
+--
+-- While the engineer is busy nothing on screen moves: the third value
+-- returned is then true, and the window is given only when it already
+-- shows the file.
 local function open_in_editor(file)
   local win = M.editor_showing(file) or M.editor_win()
   -- A name relative to the working directory keeps the status line short.
   local buf = vim.fn.bufadd(vim.fn.fnamemodify(file, ':.'))
   vim.fn.bufload(buf)
   vim.bo[buf].buflisted = true
+  if engineer_busy() then
+    if api.nvim_win_get_buf(win) ~= buf then win = nil end
+    return win, buf, true
+  end
   if api.nvim_win_get_buf(win) ~= buf then
     api.nvim_win_set_buf(win, buf)
   end
   api.nvim_set_current_win(win)
-  return win, buf
+  return win, buf, false
 end
 
 -- Clear the pointer highlight and its TTL timer.
@@ -112,15 +140,20 @@ function M.show(file, s, e)
   e = tonumber(e) or s
   if e < s then e = s end
 
-  local win, buf = open_in_editor(file)
+  local win, buf, busy = open_in_editor(file)
 
   local last = api.nvim_buf_line_count(buf)
   if s > last then s = last end
   if e > last then e = last end
   if s < 1 then s = 1 end
 
-  api.nvim_win_set_cursor(win, { s, 0 })
-  api.nvim_win_call(win, function() vim.cmd('normal! zz') end)
+  if not busy then
+    api.nvim_win_set_cursor(win, { s, 0 })
+    api.nvim_win_call(win, function() vim.cmd('normal! zz') end)
+  elseif not win then
+    -- The engineer is typing in another file: leave the screen alone.
+    return { file = api.nvim_buf_get_name(buf), start = s, ['end'] = e, skipped = 'the engineer is typing' }
+  end
 
   M.clear()
   ensure_hl()
@@ -150,7 +183,10 @@ function M.diff(file, payload)
     marks = decoded
   end
   marks = marks or {}
-  local win, buf = open_in_editor(file)
+  local win, buf, busy = open_in_editor(file)
+  if busy and not win then
+    return { file = api.nvim_buf_get_name(buf), skipped = 'the engineer is typing' }
+  end
   vim.cmd('silent! checktime')
 
   M.clear()
@@ -189,7 +225,7 @@ function M.diff(file, payload)
     end
   end
 
-  if first then
+  if first and not busy then
     api.nvim_win_set_cursor(win, { first, 0 })
     api.nvim_win_call(win, function() vim.cmd('normal! zz') end)
   end
@@ -208,15 +244,15 @@ end
 
 -- Run a pair voice command asynchronously and show its result.
 local function run_pair(args, label)
-  vim.notify('pair: ' .. label, vim.log.levels.INFO)
+  tell('pair: ' .. label)
   local cmd = { M.opts.bin }
   vim.list_extend(cmd, args)
   vim.system(cmd, { text = true }, vim.schedule_wrap(function(res)
     local out = vim.trim(res.stdout or '')
     if res.code ~= 0 then
-      vim.notify('pair: ' .. label .. ' failed: ' .. vim.trim(res.stderr or ''), vim.log.levels.WARN)
+      tell('pair: ' .. label .. ' failed: ' .. vim.trim(res.stderr or ''), vim.log.levels.WARN)
     elseif out ~= '' then
-      vim.notify('pair: ' .. out, vim.log.levels.INFO)
+      tell('pair: ' .. out)
     end
   end))
 end
@@ -243,20 +279,21 @@ end
 -- optional note, then types "Look at file:start-end: note" into the Claude
 -- pane. With a note the message is submitted; without one it is left in
 -- the input so you can keep typing.
-function M.point()
+function M.point(cmd)
   local mode = vim.fn.mode()
   local s, e
   if mode == 'v' or mode == 'V' or mode == '\22' then
     s, e = vim.fn.line('v'), vim.fn.line('.')
     api.nvim_feedkeys(api.nvim_replace_termcodes('<Esc>', true, false, true), 'n', false)
+  elseif type(cmd) == 'table' and (cmd.range or 0) > 0 then
+    s, e = cmd.line1, cmd.line2 -- :'<,'>PairPoint
   else
-    s, e = vim.fn.line("'<"), vim.fn.line("'>")
-    if s == 0 or e == 0 then s, e = vim.fn.line('.'), vim.fn.line('.') end
+    s, e = vim.fn.line('.'), vim.fn.line('.') -- no selection: the line the cursor is on
   end
   if s > e then s, e = e, s end
   local file = api.nvim_buf_get_name(0)
   if file == '' then
-    vim.notify('pair: buffer has no file', vim.log.levels.WARN)
+    tell('pair: buffer has no file', vim.log.levels.WARN)
     return
   end
   vim.ui.input({ prompt = 'Note for Claude (empty = just point): ' }, function(note)
@@ -322,7 +359,6 @@ local function apply_defaults()
   vim.o.signcolumn = 'yes'
   vim.o.splitright = true
   vim.o.splitbelow = true
-  vim.o.swapfile = false
   vim.o.wrap = false
   vim.o.scrolloff = 5
   vim.o.ignorecase = true
@@ -399,7 +435,7 @@ function M.setup(opts)
       if reason == 'conflict' or vim.bo[ev.buf].modified then
         vim.v.fcs_choice = ''
         local name = vim.fn.fnamemodify(api.nvim_buf_get_name(ev.buf), ':.')
-        vim.notify('pair: ' .. name .. ' changed on disk but has unsaved edits (:e! to reload)', vim.log.levels.WARN)
+        tell('pair: ' .. name .. ' changed on disk but has unsaved edits (:e! to reload)', vim.log.levels.WARN)
       else
         vim.v.fcs_choice = 'reload'
       end
