@@ -270,7 +270,7 @@ end
 -- Repository root: set by `pair start`, else found from the scratchpad.
 local function repo_root()
   if vim.g.pair_root and vim.g.pair_root ~= '' then return vim.g.pair_root end
-  local found = vim.fs.find({ 'PAIRING.md', '.git' }, { upward = true, path = vim.fn.getcwd() })[1]
+  local found = vim.fs.find({ '.pair', '.git' }, { upward = true, path = vim.fn.getcwd() })[1]
   if found then return vim.fs.dirname(found) end
   return vim.fn.getcwd()
 end
@@ -306,10 +306,10 @@ function M.point(cmd)
   end)
 end
 
--- Show PAIRING.md in the editor window, or go back to the file that was
+-- Show .pair/PAIRING.md in the editor window, or go back to the file that was
 -- there. One file is on screen at a time: no split.
 function M.scratch()
-  local path = repo_root() .. '/PAIRING.md'
+  local path = repo_root() .. '/.pair/PAIRING.md'
   local win = M.editor_showing(path) or M.editor_win()
   api.nvim_set_current_win(win)
   local shown = api.nvim_buf_get_name(api.nvim_win_get_buf(win))
@@ -460,13 +460,13 @@ function M.setup(opts)
   api.nvim_create_user_command('PairListen', M.listen, { desc = 'pair: push-to-talk' })
   api.nvim_create_user_command('PairInterrupt', M.interrupt, { desc = 'pair: interrupt Claude, then listen' })
   api.nvim_create_user_command('PairPoint', M.point, { desc = 'pair: point Claude at the selection', range = true })
-  api.nvim_create_user_command('PairScratch', M.scratch, { desc = 'pair: show PAIRING.md, or go back' })
+  api.nvim_create_user_command('PairScratch', M.scratch, { desc = 'pair: show the scratchpad, or go back' })
 
   if M.opts.keymaps then
     vim.keymap.set('n', '<leader>pt', M.listen, { desc = 'pair: push-to-talk' })
     vim.keymap.set('n', '<leader>pi', M.interrupt, { desc = 'pair: interrupt Claude, then listen' })
     vim.keymap.set({ 'n', 'x' }, '<leader>pp', M.point, { desc = 'pair: point Claude at this code' })
-    vim.keymap.set('n', '<leader>ps', M.scratch, { desc = 'pair: show PAIRING.md, or go back' })
+    vim.keymap.set('n', '<leader>ps', M.scratch, { desc = 'pair: show the scratchpad, or go back' })
   end
 end
 
