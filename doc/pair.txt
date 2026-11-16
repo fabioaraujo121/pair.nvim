@@ -1,0 +1,100 @@
+*pair.txt*  The Neovim side of pair: a coding agent that narrates and points
+
+Author:  Fábio Araújo <https://fabioaraujo121.com/>
+Licence: MIT
+
+==============================================================================
+CONTENTS                                                        *pair-contents*
+
+  1. Introduction ........................................... |pair-intro|
+  2. Setup .................................................. |pair-setup|
+  3. Commands and keys ...................................... |pair-commands|
+  4. Lua API ................................................ |pair-api|
+  5. Highlights ............................................. |pair-highlights|
+
+==============================================================================
+1. INTRODUCTION                                                    *pair-intro*
+
+pair (https://pairwithagent.com) runs a coding agent, Claude Code or Codex,
+in a tmux session with Neovim as the stage. Before each edit the agent says
+what it is about to do and points at the line; after it, the change is
+drawn inside the real file. This plugin is what the `pair` binary drives
+over msgpack-rpc.
+
+`pair` installs the plugin under `~/.pair/nvim` and adds it to the runtime
+path of the Neovim it starts, so no installation is needed to use pair.
+Install it from https://github.com/fabioaraujo121/pair.nvim to get the
+keymaps in a Neovim started on its own.
+
+==============================================================================
+2. SETUP                                                           *pair-setup*
+
+>lua
+    require('pair').setup({
+      ttl = 20,          -- seconds before a pointer highlight clears (0 = never)
+      diff_ttl = 120,    -- seconds a drawn change stays (0 = until the next one)
+      hl = 'PairPointer',
+      keymaps = true,    -- false: define no keymaps
+      bin = 'pair',      -- the pair binary
+    })
+<
+The defaults read PAIR_HIGHLIGHT_TTL and PAIR_DIFF_TTL from the environment.
+`pair start` sets |g:pair_bin| and |g:pair_root|.
+
+==============================================================================
+3. COMMANDS AND KEYS                                            *pair-commands*
+
+:PairListen      *:PairListen*   <leader>pt
+    Push-to-talk: record until you pause, transcribe, send to the agent.
+
+:PairInterrupt   *:PairInterrupt*   <leader>pi
+    Interrupt the agent, then listen.
+
+:[range]PairPoint   *:PairPoint*   <leader>pp (normal or visual)
+    Point the agent at the selected lines, asking for an optional note.
+
+:PairScratch     *:PairScratch*   <leader>ps
+    Show the scratchpad `.pair/PAIRING.md` in the editor window, or go back.
+
+:PairClear       *:PairClear*
+    Clear the pointer highlight.
+
+The commands run the `pair` binary and do something only while a pair
+session is running in the repository.
+
+==============================================================================
+4. LUA API                                                           *pair-api*
+
+show({file}, {start}, {end})                                      *pair.show()*
+    Open {file} in the editor window, jump to {start}, highlight lines
+    {start} to {end}. Returns the file and lines shown, or `skipped` while
+    the engineer is typing in another file.
+
+diff({file}, {marks})                                             *pair.diff()*
+    Draw a change in place. {marks} is a table or JSON string
+    `{ added = { line, ... }, removed = { { at = line, lines = { ... } } } }`
+    with 1-based line numbers of the new file.
+
+reload()                                                        *pair.reload()*
+    `:checktime` without any dialog.
+
+layout()                                                        *pair.layout()*
+    The pairing layout: project tree on the left, one file on the right.
+    Applies editor defaults and a colour scheme only when you have no
+    configuration of your own.
+
+clear()                                                          *pair.clear()*
+    Clear the pointer highlight.
+
+==============================================================================
+5. HIGHLIGHTS                                                 *pair-highlights*
+
+PairPointer   the lines the agent points at          links to |hl-Visual|
+PairAdd       lines a change added                   links to |hl-DiffAdd|
+PairAddSign   the `+` sign of an added line          links to |hl-Added|
+PairDelete    lines a change removed (virtual)       links to |hl-DiffDelete|
+
+All are defined with `default`, so a colour scheme or your configuration
+can override them.
+
+vim:tw=78:ts=8:ft=help:norl:
