@@ -262,9 +262,10 @@ function M.listen()
   run_pair({ 'hook', 'listen' }, 'listening… (speak, then pause)')
 end
 
--- Interrupt Claude (Escape), then listen.
+-- Skip the sentence being spoken; again, or when nothing is being spoken,
+-- interrupt Claude (Escape), then listen.
 function M.interrupt()
-  run_pair({ 'hook', 'interrupt' }, 'interrupting… (speak, then pause)')
+  run_pair({ 'hook', 'interrupt' }, 'interrupt… (again to cancel the turn and talk)')
 end
 
 -- Repository root: set by `pair start`, else found from the scratchpad.
